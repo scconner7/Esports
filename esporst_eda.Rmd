@@ -1,0 +1,296 @@
+---
+title: "Esports EDA"
+author: "Sean Conner"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::downcute:
+    downcute_theme: "chaos"
+    self_contained: true
+    number_sections: true
+    code_folding: show
+    toc_float: true
+    df_print: paged
+---
+
+# Setup
+
+```{r setup, echo=FALSE, message=F, warning=F}
+
+library(tidyverse)
+library(glue)
+
+```
+
+```{css, echo=FALSE}
+
+pre {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+pre[class] {
+  max-height: 400px;
+}
+
+
+```
+
+
+# Load the data
+```{r load_data}
+
+esports_csv_load_list <-
+  list.files(pattern = ".csv", full.names = T) %>%
+  set_names(gsub("^\\./", "", .) %>%
+              gsub(".csv$", "", .)) %>%
+  map(data.table::fread)
+
+
+general_data <- esports_csv_load_list$GeneralEsportData
+
+historical_data <- esports_csv_load_list$HistoricalEsportData
+
+```
+
+# Helper function to deobfuscate potential join issues
+
+```{r inner_join_w_diagnostics}
+  
+inner_join_w_diagnostics <-
+  function(left_df, right_df, by = NULL) {
+    df_list <- list(left_df, right_df)
+    
+    larger_df_index <- df_list %>%
+      map_int(~ nrow(.x)) %>%
+      order(decreasing = T) %>%
+      head(1)
+    
+    larger_df <- df_list[[larger_df_index]]
+    
+    larger_df_records <- larger_df %>%
+      nrow()
+    
+    inner_joined_df <- suppressMessages(df_list %>%
+                                          reduce(inner_join, by = by))
+    
+    joined_records <- inner_joined_df %>%
+      nrow()
+    
+    join_relative_discrep <- joined_records - larger_df_records
+    join_relative_discrep_pretty_print <-
+      scales::comma(join_relative_discrep,
+                    prefix = ifelse(join_relative_discrep > 0, "+", ""))
+    
+    match_perc <- round(joined_records / larger_df_records, 6)
+    
+    match_perc_pretty_print <- paste0(match_perc * 100, "%")
+    
+    unmatched_perc <- round(abs(1 - match_perc), 6)
+    unmatched_perc_pretty_print <- paste0(unmatched_perc * 100, "%")
+    
+    message_text <- case_when(
+      join_relative_discrep == 0 ~ "Pre- & post-inner-join record counts match exactly! You may continue without issue.",
+      join_relative_discrep > 0 ~ "More post- than pre-inner-join records. Investigate possible duplicates that increased the result set.",
+      join_relative_discrep < 0 &
+        join_relative_discrep > (larger_df_records * -1) ~
+        "More pre- than post-inner-join records, but some matches exist. Investigate records lacking a match between the input datasets.",
+      join_relative_discrep == (larger_df_records * -1) ~ "Warning: Zero matching records in the join result! Is it possible that join keys were misspecified?"
+    )
+    
+    message(
+      glue(
+        "{message_text}
+
+    Records difference: {join_relative_discrep_pretty_print}
+    Matched %: {match_perc_pretty_print}
+    Unmatched %: {unmatched_perc_pretty_print}"
+      )
+    )
+    
+    if (join_relative_discrep == 0) {
+      return(inner_joined_df)
+    }
+    
+    else {
+      left_right_anti <- left_df %>%
+        suppressMessages(anti_join(right_df))
+      
+      right_left_anti <- right_df %>%
+        suppressMessages(anti_join(left_df))
+      
+      inner_left_anti <- inner_joined_df %>%
+        suppressMessages(anti_join(left_df))
+      
+      inner_right_anti <- inner_joined_df %>%
+        suppressMessages(anti_join(right_df))
+      
+      left_inner_anti <- left_df %>%
+        suppressMessages(anti_join(inner_joined_df))
+      
+      right_inner_anti <- right_df %>%
+        suppressMessages(anti_join(inner_joined_df))
+      
+      inner_join_group_dupes <- inner_joined_df %>%
+        group_by(across(!where(is.numeric))) %>%
+        count() %>%
+        ungroup() %>%
+        filter(n > 1) %>%
+        arrange(desc(n))
+      
+      list(
+        inner_joined_df = inner_joined_df,
+        match_stats = data.frame(
+          join_relative_discrep = join_relative_discrep,
+          match_percent = match_perc,
+          unmatched_percent = unmatched_perc
+        ),
+        inner_join_group_dupes = inner_join_group_dupes,
+        left_right_anti = left_right_anti,
+        right_left_anti = right_left_anti,
+        inner_left_anti = inner_left_anti ,
+        inner_right_anti = inner_right_anti,
+        left_inner_anti = left_inner_anti ,
+        right_inner_anti = right_inner_anti
+      )
+    }
+    
+  }
+
+```
+
+# Diagnose and resolve join issues
+
+With a simple class test on `diag_join_issues` using `inherits()`, we can check whether our helper function returned an object of class "list", indicating there are some match stats to review and attempt to resolve, or a single inner-joined data frame with no detected issues. 
+
+The below code will print the `match_stats` if there were join issues to review found by our helper function `inner_join_w_diagnostics` or a message stating it's safe to proceed otherwise. Since I've run this interactively (**spoiler alert**) before writing this, I know that there are diagnostics to review in this case.
+
+So, let's take a look at `diag_join_issues$match_stats` and understand what that's telling us.
+
+## Match stats
+diag_join_issues$match_stats shows that there is a positive 1 record discrepancy in the join results compared to the largest of the two data frames in the join, meaning we got 1 **additional** record in our join results compared to what we expected.
+
+Let's turn to `diag_join_issues$inner_join_group_dupes` now as our first look into why that might be.
+
+```{r}
+
+diag_join_issues <- inner_join_w_diagnostics(general_data, historical_data)
+
+if(inherits(diag_join_issues, "list")){
+  diag_join_issues$match_stats
+} else {
+  message("No match stats to report! Proceed without issue.")
+}
+
+```
+
+## Group duplicates
+
+```{r}
+
+diag_join_issues$inner_join_group_dupes
+
+```
+
+
+```{r find_general_data_duplicate}
+
+# general_data should have one row per game; find game names where there are more than one row
+
+general_data_dupes <- general_data %>% 
+  filter(Game %in% 
+           (diag_join_issues$inner_join_group_dupes %>% 
+           distinct(Game) %>% 
+           pull(Game)))
+
+general_data <- suppressMessages(general_data %>% 
+  anti_join(general_data_dupes %>%
+              slice(2)) %>% 
+  mutate(ReleaseDate = fct_inseq(factor(ReleaseDate, ordered = T))))
+
+
+# The general dataset has two records for the game Resistance 2.
+#
+# There are 4 numeric, non-grouping columns in the dataset: TotalEarnings,
+# OnlineEarnings, TotalPlayers, and TotalTournaments
+
+# ReleaseDate is also numeric, but it is a representation of the release year, 
+# which is more appropriate to treat as a categorical variable in this context.)  
+#
+# One row for Resistance 2 has valid, non-zero values for 3 of the 4 numeric, 
+# non-grouping variables in the dataset: TotalEarnings, TotalPlayers, and
+# TotalTournaments. It has a value of 0 in the OnlineEarnings column.
+#
+# The other row for Resistance 2 shows 0 for all of the numeric, non-grouping 
+# columns in the dataset: TotalEarnings, OnlineEarnings, TotalPlayers, and
+# TotalTournaments.
+#
+# Since the Resistance 2 row showing 0 for all of the numeric, non-grouping
+# columns does not provide any additional information and is seemingly simply an
+# erroneous duplicate row, that row is dropped from the joined dataset via an
+# anti-join. The ReleaseDate variable is also converted to a factor.
+
+
+```
+
+```{r}
+
+final_join_data <- inner_join_w_diagnostics(general_data, historical_data)
+
+```
+ 
+```{r}
+
+DT::datatable(final_join_data,
+              filter = 'top',
+              options = list(pageLength = 5))
+
+```
+
+```{r}
+
+# Of course, let's skim our data and start to clearly understand what the
+# dataset's characteristics are. From here, we can assess additional cleaning
+# steps that might be necessary and start to make some hypotheses about the 
+# data.
+
+final_join_data %>% 
+  skimr::skim()
+
+```
+ 
+## Points of Interest
+
+* The Tournaments variable from the historical data is often not 1 for a given date. In fact, the average number of tournaments for a given date is ~6.5. However, the median is 2.0
+
+
+
+```{r include = F, eval = F}
+# possibly use forecast package to predict
+fixed_general_data <- general_data %>% 
+  filter(!(Game == "Resistance 2" & TotalEarnings == 0))
+
+# Let's get rid of games w/ zero earnings and zero tournaments
+# For everything else, we can do some imputation by converting zeros to NA,
+# since, in many cases, there's nonsensical zeros (i.e. Earnings but no Tournaments and vice versa).
+fixed_general_data %>% 
+  arrange(-ReleaseDate) %>% 
+  filter(!(TotalEarnings == 0 & TotalTournaments == 0)) %>% 
+  filter(TotalEarnings == 0)
+
+
+
+# Let's see if we can predict a tournament's earnings based on the release date
+# of the game, the genre of the game, and the number of players in the
+# tournament.
+
+final_joined_data %>% 
+  filter(TotalEarnings == 0)
+
+
+
+fixed_general_data %>% 
+  arrange(-TotalEarnings)
+
+```
+
+
