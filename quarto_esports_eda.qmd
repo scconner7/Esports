@@ -2,15 +2,31 @@
 title: "Esports EDA"
 author: "Sean Conner"
 date: "`r Sys.Date()`"
-output: 
-  rmdformats::downcute:
-    downcute_theme: "chaos"
-    self_contained: true
-    number_sections: true
-    code_folding: show
-    toc_float: true
-    df_print: paged
+format: 
+  html:
+    theme: vapor
+    toc: true
+    toc-location: left
+    toc-title: Sections
+    number-sections: true
+    code-fold: show
+    code-overflow: wrap
+    code-tools: true
+    code-copy: true
+    anchor-sections: true
+    df-print: paged
+project:
+  type: default
+  output_dir: _output
+  preview:
+      browser: true
 ---
+
+# Introduction
+
+
+
+
 
 # Setup
 
@@ -18,6 +34,7 @@ output:
 
 library(tidyverse)
 library(glue)
+library(RCurl)
 
 ```
 
@@ -34,8 +51,25 @@ pre[class] {
 
 ```
 
-
 # Load the data
+
+```{r}
+
+kaggle_login_url <- 
+
+```
+
+
+```{r download_kaggle_data}
+
+temp <- tempfile(fileext = ".zip")
+URL <- "https://www.kaggle.com/datasets/rankirsh/esports-earnings/download?datasetVersionNumber=17"
+download.file(url = URL, destfile = temp, method = "curl")
+kaggle_data <- unzip(temp, exdir = here::here("data"), list = T)
+
+```
+
+
 ```{r load_data}
 
 esports_csv_load_list <-
@@ -49,6 +83,7 @@ general_data <- esports_csv_load_list$GeneralEsportData
 
 historical_data <- esports_csv_load_list$HistoricalEsportData
 
+print("hello world")
 ```
 
 # Helper function to deobfuscate potential join issues
@@ -159,14 +194,15 @@ inner_join_w_diagnostics <-
 
 # Diagnose and resolve join issues
 
-With a simple class test on `diag_join_issues` using `inherits()`, we can check whether our helper function returned an object of class "list", indicating there are some match stats to review and attempt to resolve, or a single inner-joined data frame with no detected issues. 
+With a simple class test on `diag_join_issues` using `inherits()`, we can check whether our helper function returned an object of class "list", indicating there are some match stats to review and attempt to resolve, or a single inner-joined data frame with no detected issues.
 
 The below code will print the `match_stats` if there were join issues to review found by our helper function `inner_join_w_diagnostics` or a message stating it's safe to proceed otherwise. Since I've run this interactively (**spoiler alert**) before writing this, I know that there are diagnostics to review in this case.
 
 So, let's take a look at `diag_join_issues$match_stats` and understand what that's telling us.
 
 ## Match stats
-diag_join_issues$match_stats shows that there is a positive 1 record discrepancy in the join results compared to the largest of the two data frames in the join, meaning we got 1 **additional** record in our join results compared to what we expected.
+
+diag_join_issues\$match_stats shows that there is a positive 1 record discrepancy in the join results compared to the largest of the two data frames in the join, meaning we got 1 **additional** record in our join results compared to what we expected.
 
 Let's turn to `diag_join_issues$inner_join_group_dupes` now as our first look into why that might be.
 
@@ -189,7 +225,6 @@ if(inherits(diag_join_issues, "list")){
 diag_join_issues$inner_join_group_dupes
 
 ```
-
 
 ```{r find_general_data_duplicate}
 
@@ -236,7 +271,7 @@ general_data <- suppressMessages(general_data %>%
 final_join_data <- inner_join_w_diagnostics(general_data, historical_data)
 
 ```
- 
+
 ```{r}
 
 DT::datatable(final_join_data,
@@ -256,12 +291,10 @@ final_join_data %>%
   skimr::skim()
 
 ```
- 
+
 ## Points of Interest
 
-* The Tournaments variable from the historical data is often not 1 for a given date. In fact, the average number of tournaments for a given date is ~6.5. However, the median is 2.0
-
-
+-   The Tournaments variable from the historical data is often not 1 for a given date. In fact, the average number of tournaments for a given date is \~6.5. However, the median is 2.0
 
 ```{r include = F, eval = F}
 # possibly use forecast package to predict
@@ -291,5 +324,3 @@ fixed_general_data %>%
   arrange(-TotalEarnings)
 
 ```
-
-
