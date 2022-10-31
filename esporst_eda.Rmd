@@ -273,8 +273,7 @@ fixed_general_data <- general_data %>%
 # since, in many cases, there's nonsensical zeros (i.e. Earnings but no Tournaments and vice versa).
 fixed_general_data %>% 
   arrange(-ReleaseDate) %>% 
-  filter(!(TotalEarnings == 0 & TotalTournaments == 0)) %>% 
-  filter(TotalEarnings == 0)
+  filter(!(TotalEarnings == 0 & TotalTournaments == 0))
 
 
 
@@ -282,13 +281,17 @@ fixed_general_data %>%
 # of the game, the genre of the game, and the number of players in the
 # tournament.
 
-final_joined_data %>% 
+fixed_general_data %>% 
   filter(TotalEarnings == 0)
 
 
 
 fixed_general_data %>% 
   arrange(-TotalEarnings)
+
+fixed_general_data %>% 
+  lm(TotalEarnings ~ TotalPlayers + TotalTournaments + Genre, .) %>% 
+  summary()
 
 ```
 
