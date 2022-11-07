@@ -1,13 +1,19 @@
 ---
 title: "Untitled"
 format: html
-editor: visual
+editor: source
 ---
 
 ## Quarto
 
-```{r}
+```{r settings}
+
 library(rvest)
+library(tidyverse)
+
+```
+
+```{r genres}
 
 esports_games_genre <-
   read_html("https://www.esportsearnings.com/games/browse-by-genre")
@@ -34,67 +40,244 @@ game_info <- data.frame(game = elems_text_list$.games_main_game_title, stats = e
   separate(stats, c("earnings", "players", "tournaments"), "\n") %>% 
   mutate(across(c("earnings", "players", "tournaments"), ~ str_remove_all(.x, "[^[:digit:]\\.]") %>% as.numeric()))
 
-final_df <- game_info %>% 
+final_genre_df <- game_info %>% 
   cbind(genre = rep(genre_info$genre, genre_info$n)) %>% 
   relocate(genre, .after = game)
 
+```
+
+```{r find_nav_opts}
 
 esports_history_root_url <- "https://www.esportsearnings.com/history"
 
 esports_history <- read_html(esports_history_root_url)
 
-yrs_history <- esports_history %>% 
-  html_element(".detail_box_nav") %>% 
-  html_text2() %>% 
-  str_split(" - ") %>% 
+yrs_history <- esports_history %>%
+  html_element(".detail_box_nav") %>%
+  html_text2() %>%
+  str_split(" - ") %>%
   unlist()
 
+nav_opts_html_elements <- c(".detail_box_nav", ".navoptions_box")
 
-nav_opts_history <- esports_history %>% 
-  html_element(".navoptions_box") %>% 
-  html_elements("a") %>% 
-  html_attr("href") %>% 
-  str_remove_all("/history/[[:digit:]]*/")
+nav_opts_history <- map2(
+  .x = rep(list(esports_history), length(nav_opts_html_elements)),
+  .y =  nav_opts_html_elements,
+  .f = ~ .x %>%
+    html_element(.y) %>%
+    {
+      if (.y == ".detail_box_nav")
+        html_element(., "a")
+      else
+        html_elements(., "a")
+    } %>%
+    html_attr("href") %>%
+    str_remove_all("/history/[[:digit:]]*/")
+) %>%
+  reduce(c)
 
-url_combos <- expand.grid(yrs = yrs_history, nav_opts = nav_opts_history) %>% 
-  mutate(url_branch = paste0("/", url_combos$yrs, "/", url_combos$nav_opts),
-         url_full = paste0(esports_history_root_url, url_branch))
+```
 
-tbl_nav_opts <- c("countries", "games", "teams", "list_events")
 
-all_hist_html_w_tbls <- url_combos %>% 
-  filter(nav_opts %in% tbl_nav_opts) %>% 
-  split(f = .$url_branch) %>% 
+```{r make_all_url_combos}
+
+url_combos <-
+  expand.grid(
+    yrs = as.integer(yrs_history),
+    nav_opts = nav_opts_history,
+    stringsAsFactors = F
+  ) %>%
+  mutate(
+    url_branch = paste0("/", yrs, "/", nav_opts),
+    url_full = paste0(esports_history_root_url, url_branch)
+  )
+
+```
+
+
+```{r find_complex_nav_opts}
+
+first_yr_each_nav_opt <- url_combos %>%
+  group_by(nav_opts) %>% 
+  filter(yrs == max(yrs)) %>% 
+  split(f = .$nav_opts) %>%
   map(pull, url_full) %>% 
+  map(read_html) 
+
+sub_nav_flag_elems <- c(".navoptions_box.detail_box_nav_big", ".detail_list_table_nav") 
+
+names_complex_nav_opts <- sub_nav_flag_elems %>% 
+  set_names() %>% 
+  map(~ first_yr_each_nav_opt %>% 
+  map(html_elements, .x) %>% 
+    compact() %>% 
+    names()
+) %>% 
+    reduce(c)
+
+```
+
+
+```{r complex_sub_nav_opts_urls}
+
+complex_first_urls <- url_combos %>%
+  filter(nav_opts %in% names_complex_nav_opts) %>%
+  split(f = .$url_branch) %>% 
+  map(pull, url_full)
+
+complex_sub_nav_urls <- complex_first_urls %>%
+  map(read_html) %>% 
+  map2(.y = sub_nav_flag_elems %>% 
+         rep(length(yrs_history)) %>% 
+  map(list) %>% 
+  flatten() %>% 
+    rev(), ~ .x %>% html_element(.y)) %>% 
+  map(html_elements, "a") %>% 
+  map(html_attr, "href") %>% 
+  map(~unique(paste0(esports_history_root_url, .x))) %>% 
+  map(~str_extract(.x, "/{1}[^/]+$")) %>% 
+  map(~str_remove(.x, "/(top_players|history)"))
+
+complex_all_urls <- map2(complex_first_urls, complex_sub_nav_urls, expand.grid) %>% 
+  map(~paste0(.x$Var1, .x$Var2)) %>% 
+  map2(.y = complex_first_urls, .f = ~c(.y, .x)) %>% 
+  map(unique) %>% 
+  reduce(c) %>% 
+  split(f = case_when(str_detect(., "transfers") ~ "player_transfers",
+                                                str_detect(., "top_") ~ "top_players",
+                                                TRUE ~ NA_character_))
+
+```
+
+
+```{r scrape_complex_nav_opts}
+
+all_hist_complex_nav_opts_html <- complex_all_urls %>% 
+  map(~ .x %>% map(read_html))
+
+all_hist_complex_tbls_list <- all_hist_complex_nav_opts_html %>% 
+  map(~.x %>% map(html_element, ".detail_list_table")) %>%
+  map(~.x %>% map_dfr(html_table, .id = "")) %>%
+  map(compact) %>% 
+  map(reduce, bind_rows) %>% 
+  rev()
+
+```
+
+
+```{r clean_scraped_complex_nav_opts}
+
+complex_tbls_col_names <- all_hist_complex_tbls_list %>% 
+  map(slice, 1) %>% 
+  map(set_names) %>% 
+  map(janitor::clean_names) %>% 
+  map(select, -matches("^x$|^na$")) %>% 
+  map(rename_with, ~ paste("player", .x, sep = "_"), matches("^id$|^name$")) %>% 
+  map(rename_with, ~ paste0(.x, "_earnings"), contains("total")) %>% 
+  map(names)
+
+cleaned_complex_nav_opts <- all_hist_complex_tbls_list %>% 
+  map2(.y = all_hist_complex_tbls_list %>% 
+  map(slice, 1), ~ .x %>% filter(!(X1 == .y$X1 & X2 == .y$X2 & X3 == .y$X3 & X4 == .y$X4 & X5 == .y$X5 & X6 == .y$X6))) %>% 
+  map(select, -where(~ is.double(.x) & starts_with("X1"))) %>% 
+  map(select, -where(~ any(grepl("⇒", .x)) & starts_with("X5"))) %>% 
+  map(mutate, across(where( ~ all(
+    str_detect(.x, "^\\$.*\\.[:digit:]{2}$")
+  )),
+  ~ as.numeric(str_remove_all(
+    .x, "[^[:digit:]\\.]"
+  )),
+  .x)) %>% 
+  map(mutate, across(where( ~ all(
+    str_detect(.x, "%$")
+  )),
+  ~ as.numeric(str_remove_all(
+    .x, "%$"
+  )) / 100,
+  .x)) %>% 
+  map(mutate, across(everything(), ~na_if(.x, "- -") %>% 
+                       na_if(""))) %>% 
+  map(mutate, across(starts_with("X1"), ~case_when(str_detect(.x, "^[:digit:]{4}-[:digit:]{2}$") ~ paste0(.x, "-01"),
+                                                   TRUE ~ .x))) %>% 
+  map2(.y = complex_tbls_col_names, .f = ~set_names(.x, .y))
+
+```
+
+
+```{r scrape_tbl_nav_opts}
+
+names_tbl_nav_opts <-
+  subset(nav_opts_history,
+         !nav_opts_history %in% names_complex_nav_opts)
+
+all_hist_tbl_nav_opts_html <- url_combos %>%
+  filter(nav_opts %in% names_tbl_nav_opts) %>%
+  split(f = .$url_branch) %>%
+  map(pull, url_full) %>%
   map(read_html)
 
-all_hist_tbls_list <- all_hist_html_w_tbls %>% 
-  map(html_element, ".detail_list_table") %>% 
-  map(html_table) %>% 
+all_hist_tbls_list <- all_hist_tbl_nav_opts_html %>%
+  map(html_element, ".detail_list_table") %>%
+  map(html_table) %>%
   compact()
 
+reduced_tbl_nav_opts_list <- names_tbl_nav_opts %>%
+  set_names() %>%
+  map( ~ all_hist_tbls_list %>%
+         keep(str_detect(names(.), .x))) %>%
+  map(reduce, bind_rows)
+
+```
 
 
-tbl_nav_opts %>% 
-  set_names() %>% 
-  map(~ keep(.x = all_hist_tbls_list, str_detect(.x, names(all_hist_tbls_list)) == T))
+```{r clean_scraped_tbl_nav_opts}
 
-all_hist_tbls_list %>% 
-  split(f = str_detect(tbl_nav_opts))
-
-hist_games_tbl_list <- all_hist_tbls_list %>% 
-  keep(str_detect(names(.), "games"))
-
-
-reduced_nav_opts_list <- tbl_nav_opts %>% 
-  set_names() %>% 
-  map(~ all_hist_tbls_list %>% 
-  keep(str_detect(names(.), .x))) %>% 
-  map(reduce, bind_rows) %>% 
-  map(filter, !(X1 == "Date" & X2 == "Name" & X3 == "Total Prize"))
-
-# %>% 
-#   map(~ if(!is.character(.x$X1)){.x %>% select(-1)} else .x) %>% 
-#   map(~if(. %>% map(~if(any(str_detect(.x, "^\\$.*\\.00$")))))
+cleaned_tbl_nav_opts <- reduced_tbl_nav_opts_list %>%
+  map(filter, !(X1 == "Date" &
+                  X2 == "Name" & X3 == "Total Prize")) %>%
+  map( ~ if (!is.character(.x$X1)) {
+    .x %>% select(-1)
+  } else
+    .x) %>%
+  map(mutate, across(where( ~ all(
+    str_detect(.x, "^\\$.*\\.[:digit:]{2}$")
+  )),
+  ~ as.numeric(str_remove_all(
+    .x, "[^[:digit:]\\.]"
+  )),
+  .x
+  , .names = "earnings")) %>%
+  map(select, -where( ~ all(
+    str_detect(.x, "^\\$.*\\.[:digit:]{2}$")
+  ))) %>%
+  map(mutate, across(where( ~ all(
+    str_detect(.x, "[:digit:]+(?= Player(s?))")
+  )),
+  ~ as.integer(str_remove_all(.x, "[^[:digit:]]")),
+  .x,
+  .names = "players")) %>%
+  map(mutate, across(where( ~ all(
+    str_detect(.x, "[:digit:]+(?= Tournament(s?))")
+  )),
+  ~ as.integer(str_remove_all(.x, "[^[:digit:]]")),
+  .x,
+  .names = "tournaments")) %>%
+  map(select, -where( ~ all(
+    str_detect(.x, "[:digit:]+(?= Player(s?))")
+  ))) %>%
+  map2(
+    .y = str_replace(str_remove_all(names(.), "^list_|s$"), "countrie", "country"),
+    .f = ~ .x %>% relocate(X2, .before = everything()) %>% rename(!!.y := X2)
+  ) %>%
+  map(mutate, across(where( ~ all(
+    str_detect(.x, "[:digit:]{4}-[:digit:]{1,2}-[:digit:]{1,2}")
+  )), ~ .x, .names = "date")) %>%
+  map(select, -starts_with("X"))
     
+```
+
+```{r combined_clean_nav_opts}
+
+combined_clean_nav_opts <- c(cleaned_complex_nav_opts, cleaned_tbl_nav_opts)
+
 ```
