@@ -145,7 +145,8 @@ complex_all_urls <- map2(complex_first_urls, complex_sub_nav_urls, expand.grid) 
   reduce(c) %>% 
   split(f = case_when(str_detect(., "transfers") ~ "player_transfers",
                                                 str_detect(., "top_") ~ "top_players",
-                                                TRUE ~ NA_character_))
+                                                TRUE ~ NA_character_)) %>% 
+  map(~ .x %>% split(f = as.integer(str_extract(., "(?<=/)[:digit:]{4}(?=/)"))))
 
 ```
 
@@ -153,13 +154,13 @@ complex_all_urls <- map2(complex_first_urls, complex_sub_nav_urls, expand.grid) 
 ```{r scrape_complex_nav_opts}
 
 all_hist_complex_nav_opts_html <- complex_all_urls %>% 
-  map(~ .x %>% map(read_html))
+  map_depth(3, read_html)
 
 all_hist_complex_tbls_list <- all_hist_complex_nav_opts_html %>% 
-  map(~.x %>% map(html_element, ".detail_list_table")) %>%
-  map(~.x %>% map_dfr(html_table, .id = "")) %>%
-  map(compact) %>% 
-  map(reduce, bind_rows) %>% 
+  map_depth(3, html_element, ".detail_list_table") %>%
+  map_depth(3, html_table) %>%
+  map_depth(3, compact) %>% 
+  map(~.x %>% map_dfr(bind_rows, .id = "year")) %>% 
   rev()
 
 ```
@@ -174,6 +175,7 @@ complex_tbls_col_names <- all_hist_complex_tbls_list %>%
   map(select, -matches("^x$|^na$")) %>% 
   map(rename_with, ~ paste("player", .x, sep = "_"), matches("^id$|^name$")) %>% 
   map(rename_with, ~ paste0(.x, "_earnings"), contains("total")) %>% 
+  map(rename, year = 1) %>% 
   map(names)
 
 cleaned_complex_nav_opts <- all_hist_complex_tbls_list %>% 
